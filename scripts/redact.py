@@ -9,6 +9,17 @@
 3. 成品图（封面/配图里的缩略图）用"局部贴片"修复，不重做整图
 4. 嵌套映射 = 多尺度模板匹配(粗) + MSE窗口搜索(精)，禁止手工估算坐标
 
+安全设计（v1.1.4 起）——下面三条是硬约束，改代码时请勿回退：
+A. fail-closed：每个 --text 独立判定命中结果。只要有一项没定位到，就在
+   **写任何输出文件之前**中止（退出码非 0），不会产出"漏打一处"的成品。
+   确需放行必须显式加 --allow-unmatched，届时打印醒目警告。
+B. 验证图默认只由已打码图派生：不把"未打码原图"的放大裁剪写进磁盘。
+   确需与原图对照时加 --include-unredacted-verification（会额外告警）。
+C. 验证图落私有目录：默认建在系统临时区的 0700 私有目录，文件权限 0600；
+   --verify-dir 可指定位置（同样强制 0700）。文件名含"运行号 + 索引 + 完整
+   坐标元组"，已存在即拒写、绝不静默覆盖——"人工复核"这道防线不能被自己
+   覆盖掉。同目录另出 verification-manifest.json（值做掩码，不落明文 PII）。
+
 依赖（本 skill 文档与 CLI 输出为简体中文：面向中文平台小红书创作者，受众定位）：
   # 推荐 venv 隔离：
   python3 -m venv .venv && source .venv/bin/activate
@@ -23,17 +34,27 @@
       --targets 封面.png 配图.png \
       --out /workspace/证书-打码.png --target-out /workspace/
 
-  # 手动坐标兜底（OCR 识别不出时）
-  python3 redact.py --src 图.png --box 913,464,1002,514 --out out.png
+  # 手动坐标兜底（OCR 识别不出时；也是 fail-closed 中止后的推荐补法）
+  python3 redact.py --src 图.png --text "张三" --box 913,464,1002,514 --out out.png
 
   # 清除成品图里历史错误打码（src坐标系框，从干净src取贴片还原）
   python3 redact.py ... --clean-box 810,320,960,445
 
-跑完后必须：Read 查看 --verify-dir 里的验证裁剪图，确认后才算完成。
+  # 需要"未打码对照图"时（默认不生成）
+  python3 redact.py ... --include-unredacted-verification
+
+  # 明知有漏仍要出图（不推荐）
+  python3 redact.py ... --allow-unmatched
+
+跑完后必须：Read 查看结尾打印的验证目录里的图，确认打码位置后才算完成。
+验证目录含个人信息，复核完成后请整目录删除。
 """
 import argparse
+import hashlib
 import os
 import sys
+import tempfile
+import time
 
 import numpy as np
 from PIL import Image
@@ -246,11 +267,33 @@ def match_transform(src_gray, tgt_gray, roi, s_lo=0.25, s_hi=0.9):
     return s, ox, oy, score
 
 
-# ---------------- 验证图 ----------------
+# ---------------- 验证图（私有目录 + 唯一文件名 + 拒绝覆盖） ----------------
+
+def _chmod_quiet(path, mode):
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def make_verify_dir(explicit):
+    """建验证目录。一律 0700。返回 (绝对路径, 是否临时目录)"""
+    if explicit:
+        os.makedirs(explicit, exist_ok=True)
+        d = os.path.abspath(explicit)
+        _chmod_quiet(d, 0o700)
+        return d, False
+    d = tempfile.mkdtemp(prefix='redact-verify-')
+    _chmod_quiet(d, 0o700)
+    return d, True
+
 
 def save_verify(img_pil, box, path, ctx=90, zoom=3):
-    """裁剪敏感框上下文并画框放大，供人工确认"""
+    """裁剪敏感框上下文并画框放大，供人工确认。文件权限 0600，已存在则拒写"""
     from PIL import ImageDraw
+    if os.path.exists(path):
+        sys.exit(f"验证图路径已存在，拒绝覆盖（避免复核证据被静默吃掉）：{path}\n"
+                 f"  换个 --verify-dir，或先清掉旧目录后重跑。")
     W, H = img_pil.size
     x1, y1, x2, y2 = expand(box, ctx, (W, H))
     crop = img_pil.crop((x1, y1, x2, y2))
@@ -260,6 +303,20 @@ def save_verify(img_pil, box, path, ctx=90, zoom=3):
     bx2, by2 = (box[2] - x1) * zoom, (box[3] - y1) * zoom
     d.rectangle([bx1, by1, bx2, by2], outline=(255, 0, 0), width=max(2, zoom))
     crop.save(path)
+    _chmod_quiet(path, 0o600)
+    return path
+
+
+def _mask(text):
+    """掩码显示，用于 manifesto——不把明文 PII 再写一份到磁盘"""
+    t = text.strip()
+    if len(t) <= 1:
+        return '*' * max(1, len(t))
+    return t[0] + '*' * (len(t) - 1)
+
+
+def _digest(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]
 
 
 # ---------------- 主流程 ----------------
@@ -276,41 +333,116 @@ def main():
     ap.add_argument('--out', default=None, help='打码后源图输出路径')
     ap.add_argument('--inplace', action='store_true', help='targets 原地覆盖（默认输出到 --target-out）')
     ap.add_argument('--target-out', default=None, help='targets 修复后输出目录')
-    ap.add_argument('--verify-dir', default='./redact_verify', help='验证图输出目录')
+    ap.add_argument('--verify-dir', default=None,
+                    help='验证图输出目录（默认：系统临时区下的 0700 私有目录）')
     ap.add_argument('--clean-box', action='append', default=[],
                     help='src坐标系框：从干净src取贴片，清除targets中该区域的历史错误内容，可多次')
+    ap.add_argument('--allow-unmatched', action='store_true',
+                    help='危险：允许部分 --text 未定位到时仍然输出。默认 fail-closed 中止，'
+                         '不产出漏打码的成品')
+    ap.add_argument('--include-unredacted-verification', action='store_true',
+                    help='危险：额外输出"未打码原图"的放大裁剪图。默认只输出已打码图')
     args = ap.parse_args()
 
-    os.makedirs(args.verify_dir, exist_ok=True)
     src = Image.open(args.src).convert('RGB')
     W, H = src.size
     src_gray = cv2.cvtColor(np.array(src), cv2.COLOR_RGB2GRAY)
 
-    # 1) 定位
+    # ---- 1) 定位：先把所有结果判完，写任何文件之前决定是否中止 ----
     boxes = [tuple(int(v) for v in b.split(',')) for b in args.box]
+    matched, unmatched = [], []
     for text in args.text:
         hits = find_text_boxes(src, text)
         if not hits:
-            print(f"!! OCR 未找到 '{text}'，请人工给 --box 兜底")
+            unmatched.append(text)
+            print(f"✗ OCR 未找到 '{text}'")
+            continue
         for hb in hits:
             print(f"✓ OCR 定位 '{text}': {hb}")
             boxes.append(hb)
-    if not boxes:
-        sys.exit("没有任何打码框，退出")
+        matched.append((text, len(hits)))
 
-    # 2) 源图打码
+    print("\n—— 定位汇总（写盘前）——")
+    print(f"  待打码文本 {len(args.text)} 项：命中 {len(matched)} 项，未命中 {len(unmatched)} 项")
+    print(f"  手动 --box {len(args.box)} 个")
+    if unmatched:
+        print("  未命中：" + "、".join(f"'{t}'" for t in unmatched))
+
+    if not boxes:
+        sys.exit("没有任何打码框，退出（未写入任何输出文件）")
+    if unmatched and not args.allow_unmatched:
+        sys.exit(
+            "\n打码中止：以下文本未能定位。为避免产出漏打码的成品，未写入任何输出。\n"
+            "  " + "、".join(f"'{t}'" for t in unmatched) + "\n\n"
+            "  处理方式（任选其一）：\n"
+            "    1) 为每项补 --box x1,y1,x2,y2 后重跑（推荐，坐标以原图为准）\n"
+            "    2) 确认这些字确实不在图上、无需打码 → 把它们从 --text 里去掉\n"
+            "    3) 明知有漏仍要出图 → 加 --allow-unmatched"
+            "（输出会包含未打码的敏感信息，风险自负）\n")
+    if unmatched:
+        print("\n" + "!" * 66)
+        print("!! --allow-unmatched 已开启：本次输出可能含未打码的敏感信息")
+        print("!! 未命中：" + "、".join(unmatched))
+        print("!" * 66 + "\n")
+
+    # ---- 2) 建验证目录（到这里才允许落盘）----
+    verify_dir, is_temp = make_verify_dir(args.verify_dir)
+    run_id = time.strftime('%m%d-%H%M%S')
+    manifest = dict(
+        generatedAt=time.strftime('%Y-%m-%dT%H:%M:%S'),
+        runId=run_id,
+        source=os.path.abspath(args.src),
+        sourceSize=[W, H],
+        allowUnmatched=bool(args.allow_unmatched),
+        unredactedVerification=bool(args.include_unredacted_verification),
+        verifyDir=verify_dir,
+        verifyDirIsTemporary=is_temp,
+        verifyDirMode='0700',
+        requestedTexts=[dict(label=_mask(t), digest=_digest(t), matched=True, hits=n)
+                        for t, n in matched]
+                       + [dict(label=_mask(t), digest=_digest(t), matched=False, hits=0)
+                          for t in unmatched],
+        manualBoxes=[list(b) for b in (tuple(int(v) for v in s.split(',')) for s in args.box)],
+        boxes=[],
+        verificationFiles=[],
+        note='验证图含未打码/已打码的个人信息，人工复核完成后请整目录删除。'
+             'requestedTexts 中的值以掩码+摘要形式记录，不落明文。',
+    )
+
+    def vpath(kind, idx, box, extra=''):
+        """唯一文件名：运行号 + 类型 + 索引 + 完整坐标元组"""
+        x1, y1, x2, y2 = box
+        return os.path.join(verify_dir,
+                            f"{run_id}_{kind}_{idx:03d}_{x1}-{y1}-{x2}-{y2}{extra}.png")
+
+    # ---- 3) 源图打码 ----
     src_mos = src.copy()
-    for b in boxes:
+    for i, b in enumerate(boxes):
         eb = expand(b, args.pad, (W, H))
         pixelate(src_mos, eb, args.block)
-        save_verify(src, b, os.path.join(args.verify_dir, f'src_locate_{b[1]}.png'))
-        save_verify(src_mos, b, os.path.join(args.verify_dir, f'src_done_{b[1]}.png'))
+        entry = dict(index=i, box=list(b), expandedBox=list(eb), source=['--box']
+                     if b in [tuple(int(v) for v in s.split(',')) for s in args.box] else ['--text'])
+        if args.include_unredacted_verification:
+            p = vpath('src-UNREDACTED', i, b)
+            entry['unredactedVerification'] = save_verify(src, b, p)
+            manifest['verificationFiles'].append(p)
+        p = vpath('src-redacted', i, b)
+        entry['redactedVerification'] = save_verify(src_mos, b, p)
+        manifest['verificationFiles'].append(p)
+        manifest['boxes'].append(entry)
+
+    if args.include_unredacted_verification:
+        print("\n" + "!" * 66)
+        print("!! 已输出未打码对照图（src-UNREDACTED_*）——目录里含明文个人信息")
+        print("!! 复核完成后请立即整目录删除")
+        print("!" * 66)
+
     if args.out:
         src_mos.save(args.out)
         print(f"✓ 打码源图 → {args.out}")
 
-    # 3) 嵌套成品图同步修复
-    for tpath in args.targets:
+    # ---- 4) 嵌套成品图同步修复 ----
+    for ti, tpath in enumerate(args.targets):
         tgt = Image.open(tpath).convert('RGB')
         tg = cv2.cvtColor(np.array(tgt), cv2.COLOR_RGB2GRAY)
         tw, th = tgt.size
@@ -327,7 +459,7 @@ def main():
         # 贴片源：干净版（清历史错误）与打码版（重采样算法与匹配阶段一致）
         src_r = resize_rgb(src, s)
         mos_r = resize_rgb(src_mos, s)
-        # 3a) 清历史错误内容（如旧打错马赛克）
+        # 4a) 清历史错误内容（如旧打错马赛克）
         for cb in args.clean_box:
             c1 = expand(tuple(int(v) for v in cb.split(',')), 4, (W, H))
             px1, py1 = int(c1[0] * s) + ox, int(c1[1] * s) + oy
@@ -335,16 +467,16 @@ def main():
             patch = src_r.crop((int(c1[0] * s), int(c1[1] * s), int(c1[2] * s), int(c1[3] * s)))
             tgt.paste(patch, (px1, py1))
             print(f"  ✓ 已清除历史区域 {cb}")
-        # 3b) 贴打码贴片
-        for b in boxes:
+        # 4b) 贴打码贴片
+        for bi, b in enumerate(boxes):
             eb = expand(b, args.pad, (W, H))
             bx1, by1 = int(eb[0] * s) + ox, int(eb[1] * s) + oy
             bx2, by2 = int(eb[2] * s) + ox, int(eb[3] * s) + oy
             patch = mos_r.crop((int(eb[0] * s), int(eb[1] * s), int(eb[2] * s), int(eb[3] * s)))
             tgt.paste(patch, (bx1, by1))
-            save_verify(tgt, (bx1, by1, bx2, by2),
-                        os.path.join(args.verify_dir,
-                                     f'target_{os.path.splitext(os.path.basename(tpath))[0]}_{by1}.png'))
+            p = vpath('target', ti * 1000 + bi, b, extra=f"_{os.path.splitext(os.path.basename(tpath))[0]}")
+            save_verify(tgt, (bx1, by1, bx2, by2), p)
+            manifest['verificationFiles'].append(p)
         if args.inplace:
             tgt.save(tpath)
             print(f"  ✓ 已就地更新 {tpath}")
@@ -354,7 +486,18 @@ def main():
             tgt.save(op)
             print(f"  ✓ 修复版 → {op}")
 
-    print("\n== 完成。必做：Read 查看", os.path.abspath(args.verify_dir), "里的验证图，确认打码位置后才能交付 ==")
+    # ---- 5) 验证清单 ----
+    mp = os.path.join(verify_dir, f'{run_id}_verification-manifest.json')
+    with open(mp, 'w', encoding='utf-8') as f:
+        import json as _json
+        _json.dump(manifest, f, ensure_ascii=False, indent=2)
+    _chmod_quiet(mp, 0o600)
+
+    print("\n== 完成 ==")
+    print(f"验证目录：{verify_dir}" + ("（系统临时目录，重启后可能被清理）" if is_temp else ""))
+    print("必做：Read 逐张查看验证图，确认打码位置后才能交付。")
+    print("验证目录含个人信息，复核完成后请整目录删除：")
+    print(f"  rm -rf '{verify_dir}'")
 
 
 if __name__ == '__main__':

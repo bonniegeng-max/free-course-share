@@ -23,14 +23,15 @@
 - **chi_sim 中文 OCR** 词级定位（英文 OCR 识别中文只会输出乱码坐标，是打偏的最常见根因）
 - 自动合并被 OCR 拆开的单字（"耿"+"悦" → 一个框），框自动外扩防露边
 - **封面/配图里嵌的证书缩略图同步修复**：模板匹配粗定位 + MSE 网格精搜（scale 与 offset 都精调）自动求出嵌入变换，局部贴片修复，不重做整图
-- 每一步自动输出**放大验证裁剪图**，人工确认后再发布
+- **fail-closed：漏一项就不出图**。每个 `--text` 独立核验，只要有一个字段没定位到，就在**写任何输出文件之前**中止，绝不产出"打了姓名漏了工号"的成品
+- **验证图落私有目录**：系统临时区 0700 目录、文件权限 0600，默认只含**已打码**的图（红框 + 非敏感上下文），不含未打码原图；文件名带运行号+索引+完整坐标，不会互相覆盖
 - `--clean-box` 从干净源图取贴片，一键清除历史打错的内容
 
 ```bash
-python3 scripts/redact.py --src 证书原图.png --text "张三" \
+python3 scripts/redact.py --src 证书原图.png --text "张三" --text "EMP-88231" \
     --targets 封面.png 配图-证书实拍页.png \
-    --out /workspace/证书-打码.png --target-out /workspace/ \
-    --verify-dir /tmp/redact_verify
+    --out /workspace/证书-打码.png --target-out /workspace/
+# 验证目录路径在结尾打印；复核完删掉整个目录
 ```
 
 ## 安装
