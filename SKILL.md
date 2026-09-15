@@ -22,12 +22,18 @@ metadata:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install \
+pip install --index-url https://pypi.org/simple --only-binary=:all: \
     pillow==12.1.0 \
     numpy==2.3.5 \
     opencv-python-headless==4.13.0.92 \
     pytesseract==0.3.13
 ```
+
+> **依赖完整性**：已锁版本，并显式指向官方 PyPI（`--index-url`）+ 只装 wheel（`--only-binary=:all:`），
+> 避免 pip 配置里的镜像/extra-index 优先级带来的解析漂移。若需要**可复现的哈希校验**
+> （多用户或企业环境推荐）：先 `pip download` 取回 wheel，生成带哈希的 requirements.txt，
+> 再用 `pip install --require-hashes -r requirements.txt` 安装。
+> 注意哈希与平台/架构绑定，必须在目标平台生成后才能复用。
 
 **OCR 中文包（系统级，按平台二选一）**：
 
@@ -197,11 +203,9 @@ checklist 通用项：
    ```
    > 注：违禁词库的**单一真相源**是 `xiaohongshu-prohibited-words` skill（词库+脚本+入库/出库维护机制都归它管），本 skill 不再自带一份，避免两处不一致
    > 付费 API（multi-wordcheck / REDFOX）只在充值后补跑做双保险，不替代离线扫描
-2. **防盗水印（交付 PDF/整理类成品默认加）**：全页斜纹「小红书 @巴扎嘿」+ 页脚「@巴扎嘿 · 小红书整理」（深色页白字、浅色页灰字，按页面亮度自适应）；Bonnie 已要求默认带，不用每次问
-3. 按目标账号活跃时段发布（证书攻略类固定周六晚 20:00 左右；同系列错开 48h+）
-4. 发布后置顶评论（放短链+引导）
-5. 预备问答（注册门槛、语言、时效类高频问题）
-6. 数据观察点（点击率看封面+标题，互动率看评论区问答）
+2. **账号运营偏好（默认不做，按你自己的清单执行）**：成品水印、发布时段、置顶评论引导等属于**账号专属偏好**，不是本 skill 的默认行为——本 skill 不做任何品牌植入、不指定任何站外链接。需要时读你自己的私有清单 `~/.workbuddy/notes/free-course-share-account-checklist.md`（该文件不在本 skill 目录内，不随 skill 分发）
+3. 预备问答（注册门槛、语言、时效类高频问题）
+4. 数据观察点（点击率看封面+标题，互动率看评论区问答）
 
 ### 违禁词库维护（单一真相源在 xiaohongshu-prohibited-words）
 

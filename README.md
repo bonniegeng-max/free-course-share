@@ -43,7 +43,7 @@ git clone https://github.com/bonniegeng-max/free-course-share.git
 cd free-course-share
 
 python3 -m venv .venv && source .venv/bin/activate
-pip install \
+pip install --index-url https://pypi.org/simple --only-binary=:all: \
     pillow==12.1.0 \
     numpy==2.3.5 \
     opencv-python-headless==4.13.0.92 \

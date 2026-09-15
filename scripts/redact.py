@@ -9,16 +9,22 @@
 3. 成品图（封面/配图里的缩略图）用"局部贴片"修复，不重做整图
 4. 嵌套映射 = 多尺度模板匹配(粗) + MSE窗口搜索(精)，禁止手工估算坐标
 
-安全设计（v1.1.4 起）——下面三条是硬约束，改代码时请勿回退：
-A. fail-closed：每个 --text 独立判定命中结果。只要有一项没定位到，就在
-   **写任何输出文件之前**中止（退出码非 0），不会产出"漏打一处"的成品。
+安全设计（v1.1.4 起）——下面四条是硬约束，改代码时请勿回退：
+A. fail-closed（源图）：每个 --text 独立判定命中结果。只要有一项没定位到，就在
+   **写任何输出文件之前**中止（退出码 1），不会产出"漏打一处"的成品。
    确需放行必须显式加 --allow-unmatched，届时打印醒目警告。
-B. 验证图默认只由已打码图派生：不把"未打码原图"的放大裁剪写进磁盘。
+B. fail-closed（成品图）：--targets 里的嵌套图**先全部预检**再落盘。任何一张匹配
+   不上（或模板匹配抛错）就中止、不写任何输出，不会被"警告 + continue + 照常报告
+   完成"放过去——否则源图打了码、成品图里那份原样泄露却无人察觉。
+   确需放行须显式加 --allow-unmatched-targets；此时退出码为 2（降级），
+   清单里对应目标标记 status=skipped。
+C. 验证图默认只由已打码图派生：不把"未打码原图"的放大裁剪写进磁盘。
    确需与原图对照时加 --include-unredacted-verification（会额外告警）。
-C. 验证图落私有目录：默认建在系统临时区的 0700 私有目录，文件权限 0600；
-   --verify-dir 可指定位置（同样强制 0700）。文件名含"运行号 + 索引 + 完整
-   坐标元组"，已存在即拒写、绝不静默覆盖——"人工复核"这道防线不能被自己
-   覆盖掉。同目录另出 verification-manifest.json（值做掩码，不落明文 PII）。
+D. 验证图落私有目录 + 权限核验生效：默认建在系统临时区的 0700 私有目录，文件
+   权限 0600；--verify-dir 可指定位置（同样强制 0700）。目录权限**设置后核验实际
+   值**，不生效即中止（不静默吞异常）；文件权限核验失败会告警。文件名含"运行号 +
+   索引 + 完整坐标元组"，已存在即拒写、绝不静默覆盖——"人工复核"这道防线不能被
+   自己覆盖掉。同目录另出 verification-manifest.json（值做掩码，不落明文 PII）。
 
 依赖（本 skill 文档与 CLI 输出为简体中文：面向中文平台小红书创作者，受众定位）：
   # 推荐 venv 隔离：
@@ -269,23 +275,54 @@ def match_transform(src_gray, tgt_gray, roi, s_lo=0.25, s_hi=0.9):
 
 # ---------------- 验证图（私有目录 + 唯一文件名 + 拒绝覆盖） ----------------
 
-def _chmod_quiet(path, mode):
+def _mode_of(path):
+    try:
+        return os.stat(path).st_mode & 0o777
+    except OSError:
+        return None
+
+
+def _enforce_mode(path, mode, what, strict):
+    """设置并**核验**权限。绝不静默吞异常。
+
+    为什么要核验：chmod 可能被 ACL、只读挂载、异形文件系统拒绝，或"设了但没生效"。
+    文档里承诺了 0700/0600，就不能出现"悄悄没生效但仍报告成功"的情况——
+    这是扫描器实测点出的问题（silent failure of permission enforcement）。
+    strict=True 用于验证目录：目录权限是保护里面所有文件的那道门，不生效就必须中止。
+    """
     try:
         os.chmod(path, mode)
-    except OSError:
-        pass
+    except OSError as e:
+        msg = f"无法把{what}权限设为 {oct(mode)}：{e}"
+        if strict:
+            sys.exit(f"中止：{msg}\n"
+                     f"  {what}可能对同机其他用户可读，验证图/清单会被暴露。\n"
+                     f"  换一个支持 chmod 的 --verify-dir（如系统临时区），或修正挂载/ACL 后重跑。")
+        print(f"!! {msg}")
+        print(f"!! {what} 目前依赖所在目录的 0700 权限保护，请人工确认后再继续复核")
+        return False
+    actual = _mode_of(path)
+    if actual != mode:
+        shown = oct(actual) if actual is not None else '未知'
+        msg = f"{what}权限设置后实际为 {shown}，未达到 {oct(mode)}（可能受 ACL / 继承策略影响）"
+        if strict:
+            sys.exit(f"中止：{msg}")
+        print(f"!! {msg}")
+        return False
+    return True
 
 
 def make_verify_dir(explicit):
-    """建验证目录。一律 0700。返回 (绝对路径, 是否临时目录)"""
+    """建验证目录，一律 0700 且**核验生效**。返回 (绝对路径, 是否临时目录)"""
     if explicit:
         os.makedirs(explicit, exist_ok=True)
         d = os.path.abspath(explicit)
-        _chmod_quiet(d, 0o700)
-        return d, False
-    d = tempfile.mkdtemp(prefix='redact-verify-')
-    _chmod_quiet(d, 0o700)
-    return d, True
+        is_temp = False
+    else:
+        d = tempfile.mkdtemp(prefix='redact-verify-')
+        is_temp = True
+    _enforce_mode(d, 0o700, '验证目录', strict=True)
+    return d, is_temp
 
 
 def save_verify(img_pil, box, path, ctx=90, zoom=3):
@@ -303,7 +340,7 @@ def save_verify(img_pil, box, path, ctx=90, zoom=3):
     bx2, by2 = (box[2] - x1) * zoom, (box[3] - y1) * zoom
     d.rectangle([bx1, by1, bx2, by2], outline=(255, 0, 0), width=max(2, zoom))
     crop.save(path)
-    _chmod_quiet(path, 0o600)
+    _enforce_mode(path, 0o600, f'验证图 {os.path.basename(path)}', strict=False)
     return path
 
 
@@ -342,6 +379,9 @@ def main():
                          '不产出漏打码的成品')
     ap.add_argument('--include-unredacted-verification', action='store_true',
                     help='危险：额外输出"未打码原图"的放大裁剪图。默认只输出已打码图')
+    ap.add_argument('--allow-unmatched-targets', action='store_true',
+                    help='危险：允许部分 --targets 定位失败时仍然输出。默认 fail-closed 中止，'
+                         '避免"源图打了码、成品图里那份没打"的漏网；使用后退出码为 2（降级）')
     args = ap.parse_args()
 
     src = Image.open(args.src).convert('RGB')
@@ -385,7 +425,54 @@ def main():
         print("!! 未命中：" + "、".join(unmatched))
         print("!" * 66 + "\n")
 
-    # ---- 2) 建验证目录（到这里才允许落盘）----
+    # ---- 2) 目标图预检：仍在写任何文件之前，把所有嵌套图匹配一遍 ----
+    # 匹配不上 = 那张成品图里嵌的证书不会被修复。这属于 fail-closed 的范畴：
+    # 绝不能「打印一句警告 → continue → 照常出图 → 报告完成」——那样源图打了码、
+    # 成品图里那份原样泄露，而调用方以为全部处理完了。
+    target_plan, target_failed = [], []
+    if args.targets:
+        ux1 = min(b[0] for b in boxes); uy1 = min(b[1] for b in boxes)
+        ux2 = max(b[2] for b in boxes); uy2 = max(b[3] for b in boxes)
+        roi = expand((ux1, uy1, ux2, uy2), max(60, (uy2 - uy1) * 3), (W, H))
+        for ti, tpath in enumerate(args.targets):
+            tg = cv2.cvtColor(np.array(Image.open(tpath).convert('RGB')), cv2.COLOR_RGB2GRAY)
+            try:
+                s, ox, oy, score = match_transform(src_gray, tg, roi)
+            except RuntimeError as e:
+                target_failed.append((tpath, f"模板匹配异常：{e}"))
+                continue
+            print(f"→ 预检 {os.path.basename(tpath)}: scale={s:.4f} "
+                  f"offset=({ox},{oy}) match={score:.3f}")
+            if score < 0.85:
+                target_failed.append(
+                    (tpath, f"匹配分 {score:.3f} < 0.85（成品图被裁切/变形/不含该证书？）"))
+                continue
+            target_plan.append(dict(index=ti, path=tpath, scale=s, ox=ox, oy=oy, score=score))
+
+    if target_failed:
+        print("\n—— 目标图预检汇总 ——")
+        for p, why in target_failed:
+            print(f"  ✗ {os.path.basename(p)}：{why}")
+        if not args.allow_unmatched_targets:
+            sys.exit(
+                "\n打码中止：以下成品图里嵌的证书无法定位，修复不了。\n"
+                "  为避免「源图打了码、成品图里那份没打」的漏网，未写入任何输出。\n"
+                "  " + "\n  ".join(f"{os.path.basename(p)}：{w}" for p, w in target_failed) + "\n\n"
+                "  处理方式（任选其一）：\n"
+                "    1) 把该图从 --targets 移除（确认它不含证书后单独处理）——推荐\n"
+                "    2) 换一张嵌入变换更接近原图的成品图重跑\n"
+                "    3) 明知有漏仍要出图 → 加 --allow-unmatched-targets"
+                "（输出为降级版，退出码 2）\n")
+        print("\n" + "!" * 66)
+        print("!! --allow-unmatched-targets 已开启：以下图里的证书【未被修复】")
+        for p, why in target_failed:
+            print(f"!!   {os.path.basename(p)}：{why}")
+        print("!! 这些图不得交付，除非你另行人工处理")
+        print("!" * 66 + "\n")
+
+    degraded = bool(unmatched) or bool(target_failed)
+
+    # ---- 3) 建验证目录（到这里才允许落盘）----
     verify_dir, is_temp = make_verify_dir(args.verify_dir)
     run_id = time.strftime('%m%d-%H%M%S')
     manifest = dict(
@@ -404,9 +491,14 @@ def main():
                           for t in unmatched],
         manualBoxes=[list(b) for b in (tuple(int(v) for v in s.split(',')) for s in args.box)],
         boxes=[],
+        targets=[],
+        degraded=degraded,
+        unmatchedTexts=[dict(label=_mask(t), digest=_digest(t)) for t in unmatched],
+        failedTargets=[dict(file=os.path.basename(p), reason=w) for p, w in target_failed],
         verificationFiles=[],
         note='验证图含未打码/已打码的个人信息，人工复核完成后请整目录删除。'
-             'requestedTexts 中的值以掩码+摘要形式记录，不落明文。',
+             'requestedTexts 中的值以掩码+摘要形式记录，不落明文。'
+             'targets[].status: ok / skipped（skipped 表示该图的证书未被修复）。',
     )
 
     def vpath(kind, idx, box, extra=''):
@@ -441,21 +533,11 @@ def main():
         src_mos.save(args.out)
         print(f"✓ 打码源图 → {args.out}")
 
-    # ---- 4) 嵌套成品图同步修复 ----
-    for ti, tpath in enumerate(args.targets):
+    # ---- 4) 嵌套成品图同步修复（变换已在第 2 步预检算好，这里只贴片）----
+    for tr in target_plan:
+        ti, tpath = tr['index'], tr['path']
+        s, ox, oy, score = tr['scale'], tr['ox'], tr['oy'], tr['score']
         tgt = Image.open(tpath).convert('RGB')
-        tg = cv2.cvtColor(np.array(tgt), cv2.COLOR_RGB2GRAY)
-        tw, th = tgt.size
-        # 模板区：所有框的联合包围盒 + 上下文
-        ux1 = min(b[0] for b in boxes); uy1 = min(b[1] for b in boxes)
-        ux2 = max(b[2] for b in boxes); uy2 = max(b[3] for b in boxes)
-        ctx = max(60, (uy2 - uy1) * 3)
-        roi = expand((ux1, uy1, ux2, uy2), ctx, (W, H))
-        s, ox, oy, score = match_transform(src_gray, tg, roi)
-        print(f"→ {os.path.basename(tpath)}: scale={s:.4f} offset=({ox},{oy}) match={score:.3f}")
-        if score < 0.85:
-            print(f"!! 匹配分过低，跳过 {tpath}（嵌套图可能不存在或变形），请人工处理")
-            continue
         # 贴片源：干净版（清历史错误）与打码版（重采样算法与匹配阶段一致）
         src_r = resize_rgb(src, s)
         mos_r = resize_rgb(src_mos, s)
@@ -468,6 +550,7 @@ def main():
             tgt.paste(patch, (px1, py1))
             print(f"  ✓ 已清除历史区域 {cb}")
         # 4b) 贴打码贴片
+        tfiles = []
         for bi, b in enumerate(boxes):
             eb = expand(b, args.pad, (W, H))
             bx1, by1 = int(eb[0] * s) + ox, int(eb[1] * s) + oy
@@ -477,6 +560,7 @@ def main():
             p = vpath('target', ti * 1000 + bi, b, extra=f"_{os.path.splitext(os.path.basename(tpath))[0]}")
             save_verify(tgt, (bx1, by1, bx2, by2), p)
             manifest['verificationFiles'].append(p)
+            tfiles.append(p)
         if args.inplace:
             tgt.save(tpath)
             print(f"  ✓ 已就地更新 {tpath}")
@@ -485,19 +569,34 @@ def main():
             op = os.path.join(args.target_out, os.path.basename(tpath))
             tgt.save(op)
             print(f"  ✓ 修复版 → {op}")
+        manifest['targets'].append(dict(index=ti, file=os.path.basename(tpath), status='ok',
+                                       matchScore=round(score, 4), scale=round(s, 4),
+                                       offset=[ox, oy], verificationFiles=tfiles))
+
+    # 预检失败的目标也如实记进清单（status=skipped），不粉饰
+    _tidx = {p: i for i, p in enumerate(args.targets)}
+    for p, why in target_failed:
+        manifest['targets'].append(dict(index=_tidx.get(p), file=os.path.basename(p),
+                                        status='skipped', reason=why))
 
     # ---- 5) 验证清单 ----
     mp = os.path.join(verify_dir, f'{run_id}_verification-manifest.json')
     with open(mp, 'w', encoding='utf-8') as f:
         import json as _json
         _json.dump(manifest, f, ensure_ascii=False, indent=2)
-    _chmod_quiet(mp, 0o600)
+    _enforce_mode(mp, 0o600, '验证清单', strict=False)
 
-    print("\n== 完成 ==")
+    if degraded:
+        print("\n== 完成（降级：存在未处理项，见上方告警）==")
+        print("!! 本次输出不完整——交付前必须另行人工处理上述未命中项")
+    else:
+        print("\n== 完成 ==")
     print(f"验证目录：{verify_dir}" + ("（系统临时目录，重启后可能被清理）" if is_temp else ""))
     print("必做：Read 逐张查看验证图，确认打码位置后才能交付。")
     print("验证目录含个人信息，复核完成后请整目录删除：")
     print(f"  rm -rf '{verify_dir}'")
+    if degraded:
+        sys.exit(2)   # 非零退出码：让调用方/脚本能察觉"这批产物是降级的"
 
 
 if __name__ == '__main__':
