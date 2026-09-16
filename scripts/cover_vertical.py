@@ -18,7 +18,8 @@
     --cta "收藏备用 · 完整领取攻略看主页"
 
 说明:
-  - ⚠️ 示例文案已按 2026-09-13 新规：禁用「0元/免费/白嫖/LinkedIn/拿证」，见 SKILL.md Step 4 与 references/prohibited-words.md
+  - ⚠️ 示例文案已按 2026-09-13 新规：禁用「0元/免费/白嫖/LinkedIn/拿证」，见 SKILL.md Step 4；
+    完整禁用词库的单一真相源是 xiaohongshu-prohibited-words skill（本 skill 不再自带一份）
   - --body 传 1 张图 = 全宽铺开（等比）；传多张 = 自动两列排布（左 ceil(n/2) 张）
   - --points 可重复传多个 "大字|小字"
   - --top-badge 与 --badges 徽章色: blue|yellow|orange|red|gray

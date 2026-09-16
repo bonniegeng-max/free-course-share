@@ -3,6 +3,35 @@
 所有对外可见的变更都记录在本文件。版本号遵循语义化版本（semver）。
 本文为简体中文：本 skill 面向中文平台（小红书）创作者，属受众定位而非语言限制。
 
+## v1.1.6 (2026-09-16)
+
+### Fixed
+- **恢复完整流水线**：线上 v1.1.5 实际发布的是「单文件精简版」——包里只有 `SKILL.md`，
+  `scripts/` 三个脚本与 `references/` 全部缺失，安装后无法拼图、无法打码、无法出封面，
+  且自述为 read-only（只核验课程信息 + 写文案），与 skill 名与描述严重不符。
+  本版把完整包重新发布：`scripts/{stitch,redact,cover_vertical}.py` +
+  `references/course-screening.md` 全部归位
+
+### Security / Privacy
+- **清除示例中的真实姓名残留（3 处）**：`README.md`（单字合并示例）、
+  `CHANGELOG.md`（OCR 模糊兜底实测记录）、`scripts/redact.py` docstring（同场景示例）
+  —— 原示例用的是真实姓名，一律替换为通用示例（`张三` / `李小明`→`李小朋`）。
+  此前这些姓氏残留在 v1.1.1–v1.1.5 的线上包里一直存在
+- **移除机器专属私有路径**：`SKILL.md` Step 5 与 CHANGELOG 原先指向一个本机私有清单文件的
+  绝对路径。改为「使用者自备清单并在对话中提供」，**skill 内不引用 skill 目录之外的任何本地文件**
+- **移除个人署名**：`SKILL.md` 封面主体建议里的个人昵称归属改为中性表述「实测反馈」
+
+### Docs
+- `README.md` 快速上手示例原用 `--points "0元|完全免费" "4h|学完拿证"`，与本 skill Step 4
+  的 2026-09-13 禁用词表**自相矛盾** → 改为合规示例，并补一句「先过禁用词表」
+- `scripts/cover_vertical.py` docstring 指向的 `references/prohibited-words.md` 并不存在
+  （词库单一真相源已迁至 `xiaohongshu-prohibited-words` skill）→ 改为指向该 skill
+
+### 未变动
+- `categories` = `productivity, creative`；`topics` = `xiaohongshu, free-certificates,
+  image-stitching, pii-redaction, cover-generator`（发布时显式带上，避免被全量替换清空）
+- `scripts/redact.py` 的 fail-closed / 权限核验 / 唯一验证文件名逻辑均未改动
+
 ## v1.1.5 (2026-09-14)
 
 ### Fixed
@@ -12,7 +41,7 @@
     改为**先全部预检再落盘**：任何一张匹配不上（或模板匹配抛错）即中止、不写任何输出（退出码 1）；确需放行须显式 `--allow-unmatched-targets`，此时**退出码 2（降级）**、清单里该目标标 `status=skipped`、结尾打印"完成（降级）"
   - **权限设置静默失败（原 272–287、306 行，Medium）**：`_chmod_quiet` 把 `chmod` 的 `OSError` 直接吞掉，文档承诺的 0700/0600 可能没生效却仍报成功。
     改为 `_enforce_mode()`：**设置后核验实际权限位**；验证目录不生效即中止（目录是保护里面所有文件的那道门），文件不生效则告警并提示已降级为依赖目录保护。正常路径实测 0700 生效
-  - **账号专属交付动作迁出 skill**（`SKILL.md` 原 200–202 行，T01 强制第三方品牌推广，High）：原 Step 5 checklist 强制"成品默认加固定账号水印 + 置顶评论放短链"。改为：本 skill **不做任何品牌植入、不指定任何站外链接**；账号运营偏好（水印/发布时段/置顶评论）迁到你自己的私有清单 `~/.workbuddy/notes/free-course-share-account-checklist.md`（**不在 skill 目录内，不随包分发**），需要时读它执行
+  - **账号专属交付动作迁出 skill**（`SKILL.md` 原 200–202 行，T01 强制第三方品牌推广，High）：原 Step 5 checklist 强制"成品默认加固定账号水印 + 置顶评论放短链"。改为：本 skill **不做任何品牌植入、不指定任何站外链接**；账号运营偏好（水印/发布时段/置顶评论）改由使用者自备清单并在对话中提供，**skill 内不放任何账号专属配置**
 
 ### Changed
 - **依赖安装加固（`SKILL.md` / `README.md`，T08 Low）**：`pip install` 增加 `--index-url https://pypi.org/simple` 与 `--only-binary=:all:`，显式指向官方 PyPI 并只装 wheel；补充 `--require-hashes` 可复现校验的做法说明
@@ -64,7 +93,7 @@
 - SKILL.md：「与其他小红书 skill 的分工」表，明确与 xiaohongshu-content-workflow / xiaohongshu-cover / xiaohongshu-logic-image / multi-wordcheck 的边界
 - SKILL.md Step 5：发布 checklist 接入 multi-wordcheck 违禁词扫描（先于一切发布动作）
 - cover_vertical.py：新增 `--col-w` 参数，支持显式覆盖两列列宽（与 stitch.py 同名参数含义一致）
-- redact.py：OCR 模糊兜底——整词匹配失败时前 n-1 字符精确命中即打码（框右扩 1 字宽），覆盖"姓名 1 字被 OCR 识别错/漏"高频场景（实测"耿小悦"被识别成"耿小民"时可自动命中）；模糊命中强制提示人工确认
+- redact.py：OCR 模糊兜底——整词匹配失败时前 n-1 字符精确命中即打码（框右扩 1 字宽），覆盖"姓名 1 字被 OCR 识别错/漏"高频场景（实测"李小明"被识别成"李小朋"时可自动命中）；模糊命中强制提示人工确认
 - SKILL.md Step 2.5：明确"所有含证书的成品图（含拼图）都要进 --targets"（实测发现的姓名泄露高发路径）
 
 ### Changed
