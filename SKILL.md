@@ -1,226 +1,143 @@
 ---
 name: free-course-share
-description: 小红书"免费课程/证书"笔记生产 skill。Python 脚本实现 3 个自动化环节：截图两列拼图(stitch.py)、证书敏感信息打码(redact.py，中文OCR定位+嵌入图同步修复；fail-closed 设计，任一待打码字段未定位即中止、不产出半成品；验证图落 0700 私有目录且默认不含未打码原图)、3:4 竖版封面生成(cover_vertical.py)。筛课清单/文案模板/发布 checklist 以文档形式提供(SKILL.md 与 references/)。
-metadata:
-  openclaw:
-    requires:
-      bins:
-        - python3
-        - tesseract
+version: 1.1.8
+description: Verify whether a course is truly free, screen or compare free courses, build a shortlist, or draft accurate share copy. Use when the user requests any one of these free-course tasks; combine them only when requested.
+allowed-tools: WebSearch, WebFetch
 ---
 
-# 免费课程分享笔记工作流（小红书 · 公开版）
+# Free Course Verifier & Share Kit
 
-> **语言说明**：本 skill 面向中文内容平台（小红书）的中文创作者，文档与脚本 CLI 输出为简体中文，属目标受众定位而非语言限制；`redact.py` 依赖 chi_sim 中文 OCR 语言包是打码功能的**功能性依赖**（识别证书上的中文姓名），与界面语言无关。如需英文版文档欢迎提 issue。
+## What It Does
 
-服务场景：把免费课程/证书做成小红书笔记的完整生产流水线。
-脚本自动化素材生产（拼图 + 打码 + 竖版封面），文档沉淀方法论与文案模板。
+Verify whether a course is genuinely free, compare free-course options, build an evidence-based shortlist, or turn verified course facts into reviewable sharing copy.
 
-## 环境准备（一次性）
+The user may request any one mode or combine several modes:
 
-**推荐 venv 隔离安装**（避免污染系统 Python）：
+- **Verify** one course or certificate offer.
+- **Find** suitable free courses for a stated goal.
+- **Compare** two or more course options.
+- **Shortlist** the strongest verified choices.
+- **Draft** accurate sharing copy from verified or user-provided facts.
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install --index-url https://pypi.org/simple --only-binary=:all: \
-    pillow==12.1.0 \
-    numpy==2.3.5 \
-    opencv-python-headless==4.13.0.92 \
-    pytesseract==0.3.13
-```
+Do not require course curation and share-copy creation to appear together.
 
-> **依赖完整性**：已锁版本，并显式指向官方 PyPI（`--index-url`）+ 只装 wheel（`--only-binary=:all:`），
-> 避免 pip 配置里的镜像/extra-index 优先级带来的解析漂移。若需要**可复现的哈希校验**
-> （多用户或企业环境推荐）：先 `pip download` 取回 wheel，生成带哈希的 requirements.txt，
-> 再用 `pip install --require-hashes -r requirements.txt` 安装。
-> 注意哈希与平台/架构绑定，必须在目标平台生成后才能复用。
+## When to Use
 
-**OCR 中文包（系统级，按平台二选一）**：
+Invoke when the request explicitly concerns a free course, free learning resource, free certificate, audit track, scholarship-funded course, or a course offer whose free scope needs checking.
 
-```bash
-# macOS（Homebrew，无需管理员权限）
-brew install tesseract tesseract-lang
+Examples:
 
-# Linux（Debian/Ubuntu）：OCR 中文包是系统级安装（数据装在系统目录），
-# 需以管理员权限的终端执行一次——这是本 skill 唯一的管理员动作，仅用于装
-# OCR 系统包，skill 运行时零特权
-apt-get install -y tesseract-ocr tesseract-ocr-chi-sim
-```
+- “这门课现在真的免费吗？证书也免费吗？”
+- “推荐几门免费的数据分析入门课。”
+- “比较这三门公开课，帮我选一门。”
+- “筛选 5 门适合零基础的免费 Python 课。”
+- “把这些已经核实的课程信息写成一段分享文案。”
+- “Find free cybersecurity courses with a verifiable certificate.”
 
-> 版本号与 2026-09 release 测试一致（macOS Apple Silicon / Python 3.13 与 Linux 均兼容）；升级前请看脚本 docstring 的兼容性说明。
-> WorkBuddy 环境：把依赖装进 `~/.workbuddy/binaries/python/envs/default` 这个 venv，调用脚本时用该 venv 的 python 绝对路径。
+Do not invoke for:
 
-## 与其他小红书 skill 的分工
+- a general learning plan with no request to find or verify courses;
+- paid-course shopping when free access is irrelevant;
+- unrelated promotional copy;
+- automatic enrollment, purchasing, posting, or account actions.
 
-本 skill 是「免费课程/证书」赛道的**专门化流水线**，与通用类 skill 的边界：
+## Operating Boundary
 
-| 场景 | 用哪个 |
-|------|--------|
-| 免费课程/证书笔记全流程（筛课→拼图→打码→封面→文案→发布） | **本 skill** |
-| 其他赛道笔记的通用生产流程 | xiaohongshu-content-workflow |
-| 需要按爆款视觉规律定制封面（非模板化） | xiaohongshu-cover |
-| 流程图/对比图/分支图等强逻辑配图 | xiaohongshu-logic-image |
-| 发布前违禁词检查 | xiaohongshu-prohibited-words（本 skill Step 5 已接入，离线单一真相源） |
+- Work only with user-provided facts and publicly accessible course pages.
+- Use `WebSearch` and `WebFetch` only when current public facts require verification.
+- Keep all activity read-only.
+- Do not enroll, purchase, sign in, submit forms, publish content, or modify external data.
+- Return reviewable results in the current conversation unless the user explicitly requests a file.
 
-封面取舍：本 skill 的 `cover_vertical.py` 是**模板化快速出图**（参数固定、结构稳定、秒级出图），适合"免费证书攻略"这类结构稳定的系列笔记；需要更多视觉创意时用 xiaohongshu-cover。
+## Decide the Requested Mode
 
-## 隐私与同意（发布前必读）
+Infer the smallest mode that satisfies the request:
 
-证书截图可能含**姓名、邮箱、员工编号、CPE 积分账号、Registry ID、登录账号**等个人/账户关联信息。本 skill 的打码脚本 `redact.py` 是**辅助**而非**保证**：
+| Request | Mode | Default output |
+|---|---|---|
+| Check one offer | Verify | Verification result and restrictions |
+| Discover options | Find | Candidate list with evidence status |
+| Choose among options | Compare | Comparable table and recommendation |
+| Reduce a long list | Shortlist | Ranked shortlist and exclusions |
+| Prepare public wording | Draft | Reviewable copy with caveats |
+| End-to-end request | Combined | Verification, selection, then draft |
 
-- **OCR 不完美**：艺术字、低清字符、特殊字体可能识别失败 → 打码框偏移或漏字
-- **嵌入缩略图**：封面/配图里的证书缩略图经缩放/插值后边缘可能露字
-- **元数据残留**：PNG EXIF、文件名路径、URL 参数里的个人信息脚本不会清理
+Ask one concise question only when a missing constraint would materially change eligibility or ranking. Do not ask for details that can be safely left open.
 
-**脚本层面已做的防护**（v1.1.4 起，不要绕过）：
-- **fail-closed**：任一 `--text` 未定位到就中止，不写出漏打码的成品（见 Step 2.5 要点 3）
-- **验证图落私有目录**：系统临时区 0700、文件 0600，默认只含已打码的图，不含未打码原图；复核完请整目录删除
-- **验证文件名唯一**：索引 + 完整坐标命名，禁止静默覆盖复核证据
+## Fact Verification
 
-**所以强制要求**：
-1. **每张成品图发布前人眼确认打码到位**（脚本会打印验证目录，逐张放大确认红框位置）
-2. **不确定能否完全打码时，宁可不用真证书**：用裁剪到不含姓名/ID 的局部图，或用课程官方提供的脱敏示例图替代
-3. **公司/机构证书**常有保密/分发限制条款，发布前确认自己有发布权限
-4. **不要发布他人证书**：只发自己名下、且有权分享的
-5. **打完码删干净**：验证目录、打码前的原图、临时裁剪件都不要留在会被云同步/入库的路径下
+For each relevant course, verify:
 
-## 流程总览
+- course title and provider;
+- whether access is free and exactly what “free” includes;
+- whether a certificate, badge, assessment, or graded work costs extra;
+- enrollment status, deadline, or expiration when time-sensitive;
+- format, level, duration, prerequisites, language, and region restrictions;
+- subscription, trial, audit-track, financial-aid, or account requirements;
+- direct official URL when available.
 
-### Step 1 · 筛课（先判断值不值得发）
-读 `references/course-screening.md` 的 8 项验证清单 + 品牌分级 + 打分表。
-先核"是否真免费、无订阅墙"，再查时长、证书可挂 LinkedIn 等核心价值项；
-时效信息（截止/改版）单独加分。结论：**发 / 缓发 / 不发**，各给一句话理由。
+Use this evidence policy:
 
-### Step 2 · 素材拼图
-用户跑完课程后把截图发来（大纲页、quiz、证书页等），统一放在一个目录（如 `uploads/`）。
-**顺序按文件名序号排**：`Clipboard_Screenshot.png` → `-1.png` → `-2.png` …
-不要按目录名或 mtime 排。
+1. Prefer the official course or provider page.
+2. Cross-check material claims when sources conflict or “free” is ambiguous.
+3. Label evidence as `Verified`, `User-provided`, `Unverified`, `Conflicting`, or `Outdated`.
+4. Record the verification date for time-sensitive claims.
+5. Distinguish free course access from a free certificate.
+6. Preserve uncertainty; never invent deadlines, eligibility, certificate value, or availability.
 
-默认**两列**布局（手机可读，勿横排拉宽）：
+If reliable verification is unavailable, label the gap. Exclude the item only when the user requires verified choices.
 
-```bash
-python3 {baseDir}/scripts/stitch.py two-col 图1 图2 ... -o /workspace/第N章quiz拼图.png
-```
+## Selection Method
 
-3张→左2右1；5张→左3右2（左侧 ceil(n/2) 张）。背景自动检测（深界面→深底，白底→白底）。
+1. Extract the audience, topic, level, goal, time budget, language, region, preferred format, and definition of “free.”
+2. Normalize duplicate entries without merging conflicting facts.
+3. Check eligibility and access restrictions before ranking.
+4. Rank by the user's criteria. When none are supplied, use relevance, access clarity, provider credibility, practical fit, and time cost.
+5. Explain each inclusion or exclusion with concise evidence.
 
-### Step 2.5 · 敏感信息打码（发布前必做）
-证书上的姓名、工号、邮箱等个人信息必须打码。用脚本一条龙（中文OCR定位 → 马赛克 → 嵌入缩略图同步修复 → 自动出验证图）：
+## Output Contracts
 
-```bash
-python3 {baseDir}/scripts/redact.py \
-  --src 证书原图.png --text "张三" --text "EMP-88231" \
-  --targets 封面.png 配图-实拍页.png \
-  --out /workspace/证书-打码.png --target-out /workspace/
-```
+### Verify
 
-**每个要打码的字段都要单独一个 `--text`**，脚本会逐项核验命中情况——漏一项就中止（见要点 3）。
+- Course and provider
+- Verdict: Fully free / Free to audit / Trial only / Financial aid / Paid / Unclear
+- What is free
+- What may cost money
+- Certificate or badge status
+- Important restrictions or dates
+- Evidence status and official URL
+- Verification date
 
-要点（踩坑总结，别跳步）：
-1. **中文定位必须用 chi_sim**——eng OCR 对中文输出乱码坐标，是打码打偏的最常见根因
-2. 嵌在封面/配图里的**缩略图**不要重做整图：脚本用"模板匹配粗定位 + MSE 网格精搜（scale 和 offset 都要精调）"求出嵌入变换后局部贴片修复；按比例手工估算坐标必错
-3. **fail-closed：漏一项就不出图。** 脚本对每个 `--text` 独立判定；只要有字段没定位到，就在**写任何输出文件之前**中止（退出码 1），不会产出"打了 A 漏了 B"的成品。中止后按提示处理：`--box x1,y1,x2,y2` 手动补坐标（推荐）／确认该字确实不在图上就从 `--text` 去掉。**不要**习惯性加 `--allow-unmatched` 绕过——那就等于放行一张漏打码的图
-4. OCR 单字认错时脚本有模糊兜底（前 n-1 字命中 + 框右扩 1 字宽）会打印 `??` 提示 → 这类命中**必须**人眼过验证图
-5. **所有含证书的成品图都要进 `--targets`**——包括 Step 2 的拼图，只打码源图和封面、漏掉拼图是姓名泄露的高发路径
-6. **验证图默认落在系统临时区的 0700 私有目录**（文件权限 0600），路径在结尾打印。目录里只有**已打码**的图和 `verification-manifest.json`，不含未打码原图。交付前**必须 Read 逐张看过**，确认红框只盖住目标内容；复核完把整个目录删掉（脚本会打印 `rm -rf` 命令）
-7. 需要"打码前后对照"时加 `--include-unredacted-verification`——注意这会把**未打码**的放大裁剪写进磁盘，看完立刻删目录
-8. 清除历史打错的内容用 `--clean-box`（从干净源图取贴片还原）
+### Find or Shortlist
 
-> 打码脚本是**辅助**不是**保证**：OCR 在艺术字/低清/特殊字体上可能漏，嵌入缩略图缩放后边缘可能露字，PNG EXIF 与文件名路径里的信息脚本不管。发布前逐张人眼确认仍然不可省。
+- Search criteria and material unknowns
+- Candidate courses
+- Free-access scope
+- Level, format, duration, and prerequisites
+- Evidence status
+- Include / Exclude / Needs confirmation
+- Reason and official URL
 
-### Step 3 · 封面（3:4 竖版 1080×1440）
-按主体截图底色选主题：深色界面截图→`--theme dark`；白底 quiz→`--theme light`。
+### Compare
 
-```bash
-python3 {baseDir}/scripts/cover_vertical.py \
-  --out /workspace/笔记封面.png \
-  --theme dark|light \
-  --top-badge "品牌名|色" \
-  --badges "标签1" "标签2" \
-  --title "主标题" \
-  --sub "副标题" \
-  --body 主体图.png \
-  --points "大字|小字" ... \
-  --warn "警示1" "警示2" \
-  --cta "底部引导语"
-```
+Use the same fields and definitions for every course. End with a recommendation tied to the user's stated goal, not a generic winner.
 
-**硬性要求**：封面与笔记标题中的时长数字必须一致。
+### Draft
 
-**封面主体选择（2026-09-13 经验沉淀）**：
-- **优先用真实证书/徽章截图**作为主体（课程完课页截图、领证书页、平台完课页等）。实测反馈：真实证书截图的"我也想拿一张"欲望 >> 任何示意图/PPT 模板感
-- 示意图/几何形状/卡通徽章只用作"备用主体"——主标 + 真实证书图的组合比 PPT 模板感封面 CTR 高很多
-- 抠真实证书图时务必做两件事：
-  1. **个人信息打码**：用 `redact.py` 对原图先打码（姓名/邮箱/Registry ID/员工编号）
-  2. **OCR 敏感词涂白**：检查证书图顶部/底部/四周是否有平台/品牌添加的副标文案（如"免费学·完课发证书"），**涂白**再贴
+Create one ready-to-review draft that:
 
-### Step 4 · 文案初稿
+- uses only verified or visibly labeled user-provided facts;
+- states restrictions near the relevant claim;
+- includes direct course URLs when available;
+- avoids false urgency, guaranteed outcomes, and inflated certificate claims;
+- notes that availability and terms may change when time-sensitive;
+- remains a draft and is not posted automatically.
 
-**⚠️ 标题公式（2026-09-13 修订，替代旧版「0元/免费+大厂+时长+拿证」公式）**
+## Completion Standard
 
-旧公式 `0元/免费 + 大厂名 + 时长 + 拿证` 已废弃——它是 9/12 两次限流的直接源头。新公式：
-
-```
-【平台名/出品方】+【结果感动词】+【时长】+【凭证类型】
-例：OpenAI官方课刷完了 4小时拿3个徽章
-例：微软AI课 26分钟拿证书 附测验答案
-```
-
-**全链路禁用词（标题/正文/标签/封面 OCR 全查，任一位置出现都可能触发「仅自己可见」软限流）**：
-
-| 禁用 | 原因 | 替代 |
-|------|------|------|
-| 白嫖 | 9/12 两次实测触发限流（改标题去词后重过审核即恢复） | 直接删，靠"结果感"钩子 |
-| 0元 / ¥0 | 价格诱导词，封面 OCR 尤其敏感 | 删掉，免费靠"登录就能学"暗示 |
-| 免费（出现≥2次） | 「免费+官方+拿证」组合触发营销标签 | 全篇最多留 1 次，其余删 |
-| 官方（+免费+拿证连用） | 三词连用被打营销标签 | 官方可单用（正面引用），不与免费/拿证同框 |
-| 答案/答案合集 + PDF + 主页群 | 站外导流+资料诱导高危组合 | "攻略整理成文档，主页可看"；去掉 PDF/群 |
-| LinkedIn / 领英学习平台 | 外部平台名，导流站外 | 只写"微软出品"或直接省略平台名 |
-| 免费证书 / AI证书 标签 | 营销诱导敏感标签 | 删，保留 #微软 #人工智能 #生成式AI 等中性词 |
-
-**封面铁律（2026-09-13 新增，9/12 OpenAI 篇封面"白嫖"漏改导致二次小池）**：
-- 封面是 OCR 扫描重点，改标题后**封面必须同步去词**，否则标题白改
-- 封面不放「免费/0元/¥0/白嫖」，免费感靠课程名+徽章/证书实物图传达
-- 封面不放外部平台名（LinkedIn 等），品牌只写出品方
-- 封面文字严格对齐：标签胶囊、主副标、底部卡片全部水平居中/均分（用 textbbox 量宽居中，勿手估坐标）
-
-正文结构：
-1. 钩子句（1-2行，用「时长+结果感动词」开头，如「26分钟从注册到拿证书，全程中文界面✅」，不写免费/0元）
-2. 这是什么（品牌、几门课、时长；免费程度靠"登录就能学/完课即发"暗示，不出现"免费"二字）
-3. 保姆级步骤（编号 5 步内：注册→进路径→学→测验→领证挂档案）
-4. 大纲速览（表或一行一个）
-5. 紧迫/稀缺提醒
-6. 标签（中性词，删"免费证书/AI证书/免费课程"类）
-
-### Step 5 · 交付
-产物：筛课结论 + 拼图 + 封面 + 文案 + 发布 checklist。
-checklist 通用项：
-1. **违禁词离线扫描（先于一切发布动作，强制）**：文案初稿整体跑 `xiaohongshu-prohibited-words` skill 的扫描脚本（纯离线、不依赖付费 API），退出码 0 才可发布；P0 硬词未清空 = 禁止发布
-   ```bash
-   python3 ~/.workbuddy/skills/xiaohongshu-prohibited-words/scripts/check_prohibited.py --file 笔记终稿.md
-   # 或分字段传
-   python3 ~/.workbuddy/skills/xiaohongshu-prohibited-words/scripts/check_prohibited.py "标题" "正文" "标签"
-   ```
-   > 注：违禁词库的**单一真相源**是 `xiaohongshu-prohibited-words` skill（词库+脚本+入库/出库维护机制都归它管），本 skill 不再自带一份，避免两处不一致
-   > 付费 API（multi-wordcheck / REDFOX）只在充值后补跑做双保险，不替代离线扫描
-2. **账号运营偏好（默认不做）**：成品水印、发布时段、置顶评论引导等属于**账号专属偏好**，不是本 skill 的默认行为——本 skill 不做任何品牌植入、不指定任何站外链接、不引用 skill 目录之外的任何本地文件。需要时由使用者自行维护一份自己的运营清单并在对话里提供
-3. 预备问答（注册门槛、语言、时效类高频问题）
-4. 数据观察点（点击率看封面+标题，互动率看评论区问答）
-
-### 违禁词库维护（单一真相源在 xiaohongshu-prohibited-words）
-
-违禁词库和扫描脚本统一由 `xiaohongshu-prohibited-words` skill 管理，**本 skill 不再自带一份**。维护动作（入库/出库/降级/校准）都在那个 skill 里做，见其 SKILL.md 的「词库维护」章节。
-
-**每次发现新雷，去 `xiaohongshu-prohibited-words` 补词，不等下次返工。**
-
-## 通用踩坑原则
-
-1. **证书 > 徽章，但以实拿实物为准**：筛课时优先选发证书的课；但标题写什么取决于**实际拿到手的凭证**——只到手徽章就写「徽章」，绝不因官方文档/营销页说有证书就写「证书」。实例（2026-09）：OpenAI 帮助中心写明有 Gradual 完成证书，实测三门课学完+测评通过只到手 3 个 Accredible 徽章 → 标题用「徽章」。官方文档可能超前/过时，凭证类选题唯一可信的是自己实拿的实物
-2. **答案/测验截图放评论区**，不放正文（防限流+促互动）
-3. **标题与封面时长一致**
-4. 小众品牌慎发；优先微软/Google/名校
-5. 一切以"自己走一遍流程"为准，素材截图=最强信任状
-6. 政策随时变：发文前自核
-7. **「仅自己可见」软限流自救路径（2026-09-12 实测）**：发布后几小时浏览个位数 + 朋友视角主页看不到 → 大概率是敏感词软限流。自救：改标题/封面去掉敏感词 → 触发重新审核 → 过审即恢复（比申诉快，当晚不删不改）。确认被压再动手，编辑会重置冷启动
-8. **删除重发 vs 隐藏重发**：旧笔记设「仅自己可见」（不删，删除=规避处罚判定且重发被查重）；新版隔 24-48h 再发，避免同主题挨太近被判刷量
-9. **同系列笔记档期错开**：证书攻略系列避免连续周末晚同主题叠发，错开 48h+，工作日午休/周三晚是 AI 学习类第二高峰
+- The requested mode is completed without forcing unrelated outputs.
+- Every material claim is supported or visibly labeled.
+- “Free” is defined precisely.
+- Course access and certificate cost are not conflated.
+- Time-sensitive facts include a verification date.
+- The work remains read-only and has no external side effects.

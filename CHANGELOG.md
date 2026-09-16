@@ -3,6 +3,21 @@
 所有对外可见的变更都记录在本文件。版本号遵循语义化版本（semver）。
 本文为简体中文：本 skill 面向中文平台（小红书）创作者，属受众定位而非语言限制。
 
+## v1.1.8 (2026-09-16)
+
+### Changed
+- Display name 调整为 `Free Course Verifier & Share Kit`，直接表达核验、筛选和分享三类结果。
+- topics 改为 `free-course`、`course-verification`、`certificate`、`learning-resources`、`share-copy`，移除已经不属于当前产品的图片拼接、打码和封面生成主题。
+- 取消“筛课与分享文案必须同时出现”的双条件触发。单课核验、课程发现、比较、筛选或分享文案任一任务均可独立调用。
+- 输出按 Verify、Find、Compare、Shortlist、Draft 与 Combined 模式适配，不再强制生成未请求的分享稿。
+- 保留官方来源优先、时效标注、免费范围精确定义、只读和不自动发布边界。
+
+## v1.1.7 (2026-09-16)
+
+### Changed
+- 恢复单文件、只读的课程核验与分享文案核心。
+- 移除图片拼接、OCR 打码和封面生成脚本，避免多文件扫描问题及能力表述冲突。
+
 ## v1.1.6 (2026-09-16)
 
 ### Fixed

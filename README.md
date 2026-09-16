@@ -1,89 +1,40 @@
-# free-course-share
+# Free Course Verifier & Share Kit
 
-小红书「免费课程 / 0元拿证」赛道笔记生产工作流，面向 AI Agent 的 skill（兼容 AgentSkills / openclaw 规范）。
+An OpenClaw skill for checking whether a course is genuinely free, finding and comparing free courses, building an evidence-based shortlist, and drafting accurate sharing copy.
 
-> **Language note**: This skill targets Chinese-platform (Xiaohongshu) creators, so docs and CLI output are in Simplified Chinese by design — audience scoping, not a language restriction. The `chi_sim` OCR pack in `redact.py` is a functional dependency for detecting Chinese names on certificates. English docs available on request (open an issue).
+## Use it for
 
-一条流水线跑完：**筛课打分 → 素材拼图 → 证书敏感信息打码 → 3:4 竖版封面 → 文案初稿 → 发布 checklist**。
+- verifying one course or certificate offer;
+- finding free courses for a topic, level, region, or time budget;
+- comparing several course options;
+- reducing a long list to the strongest verified choices;
+- drafting share copy from verified or user-provided facts.
 
-## 包含内容
+Any one of these requests can activate the skill. Course curation and copywriting no longer have to be requested together.
 
-| 文件 | 作用 |
-|------|------|
-| `SKILL.md` | 完整工作流（6 步）+ 踩坑原则 |
-| `scripts/stitch.py` | 多图**两列拼图**（手机可读，自动适配深/浅底色） |
-| `scripts/redact.py` | 证书姓名等敏感信息**打码一条龙**（见下） |
-| `scripts/cover_vertical.py` | 3:4 竖版封面（1080×1440，深/浅双主题，徽章/卖点/警示条参数化） |
-| `references/course-screening.md` | 课程筛选 8 项验证清单 + 品牌分级 + /8 打分表 |
+## What it verifies
 
-## 亮点：redact.py，打码不再返工
+- what course access is free;
+- whether the certificate, badge, assessment, or graded work costs extra;
+- deadlines, enrollment status, trials, subscriptions, audit tracks, and financial aid;
+- level, duration, prerequisites, language, and region restrictions;
+- the official destination URL and verification date.
 
-针对"证书姓名打码打不准、反复返工"的经典痛点：
+## Example requests
 
-- **chi_sim 中文 OCR** 词级定位（英文 OCR 识别中文只会输出乱码坐标，是打偏的最常见根因）
-- 自动合并被 OCR 拆开的单字（"张"+"三" → 一个框），框自动外扩防露边
-- **封面/配图里嵌的证书缩略图同步修复**：模板匹配粗定位 + MSE 网格精搜（scale 与 offset 都精调）自动求出嵌入变换，局部贴片修复，不重做整图
-- **fail-closed：漏一项就不出图**。每个 `--text` 独立核验，只要有一个字段没定位到，就在**写任何输出文件之前**中止，绝不产出"打了姓名漏了工号"的成品
-- **验证图落私有目录**：系统临时区 0700 目录、文件权限 0600，默认只含**已打码**的图（红框 + 非敏感上下文），不含未打码原图；文件名带运行号+索引+完整坐标，不会互相覆盖
-- `--clean-box` 从干净源图取贴片，一键清除历史打错的内容
-
-```bash
-python3 scripts/redact.py --src 证书原图.png --text "张三" --text "EMP-88231" \
-    --targets 封面.png 配图-证书实拍页.png \
-    --out /workspace/证书-打码.png --target-out /workspace/
-# 验证目录路径在结尾打印；复核完删掉整个目录
+```text
+这门课现在真的免费吗？证书也免费吗？
+推荐几门免费的数据分析入门课。
+比较这三门公开课，帮我选一门。
+把这些已经核实的课程信息写成一段分享文案。
+Find free cybersecurity courses with a verifiable certificate.
 ```
 
-## 安装
+## Safety boundary
 
-**推荐 venv 隔离安装**：
+The skill uses read-only public web research. It does not enroll, purchase, sign in, submit forms, publish content, or modify external data.
 
-```bash
-git clone https://github.com/bonniegeng-max/free-course-share.git
-cd free-course-share
-
-python3 -m venv .venv && source .venv/bin/activate
-pip install --index-url https://pypi.org/simple --only-binary=:all: \
-    pillow==12.1.0 \
-    numpy==2.3.5 \
-    opencv-python-headless==4.13.0.92 \
-    pytesseract==0.3.13
-
-# OCR 中文包（系统级）：数据装在系统目录，Linux 需在管理员权限的终端执行一次
-# （唯一的管理员动作，仅装 OCR 系统包，skill 运行时零特权；macOS 用 brew 无需管理员权限）
-apt-get install -y tesseract-ocr tesseract-ocr-chi-sim
-```
-
-## 快速上手
-
-> 以下命令均在 **skill 根目录**（本 README 所在目录）执行；在其他目录调用时，把 `scripts/` 替换为 skill 的实际安装路径（如 `~/.workbuddy/skills/free-course-share/scripts/`）。
-
-```bash
-# 1) 两列拼图（3张→左2右1；5张→左3右2）
-python3 scripts/stitch.py two-col 图1.png 图2.png 图3.png -o 拼图.png
-
-# 2) 证书打码（OCR 定位 + 嵌入图同步修复 + 验证图）
-python3 scripts/redact.py --src 证书.png --text "姓名" --out 证书-打码.png
-
-# 3) 3:4 竖版封面
-python3 scripts/cover_vertical.py --out 封面.png --theme dark \
-    --title "标题" --sub "副标题" --body 拼图.png \
-    --points "4h|一门学完" "徽章|已到手"
-```
-
-> 封面/标题文案请先过 SKILL.md Step 4 的禁用词表（`0元`/`免费`/`白嫖`/`拿证` 等 2026-09-13 起全链路禁用），
-> 示例参数里的时长与笔记标题里的时长必须一致。
-
-工作流的完整方法论（筛课清单、标题公式、正文结构、发布 checklist、踩坑原则）见 [SKILL.md](SKILL.md)。
-
-## 适用人群
-
-- 运营"免费课程 / 证书"赛道小红书账号的创作者
-- 需要 agent 自动化笔记素材生产（拼图/封面/打码）的 openclaw / Claude skills 用户
-
-## 隐私与免责声明
-
-`redact.py` 是**辅助工具**，不保证完全隐私保护。OCR 对艺术字/低清字可能识别失败，缩略图经缩放后边缘可能漏字。请在发布前**逐张**用脚本输出的验证裁剪图人眼确认打码到位；不确定时优先使用裁剪版或脱敏示例替代真证书。公司/机构证书常有保密条款，发布前请确认自己有发布权限。本项目作者不对隐私泄露后果承担责任。
+See [`SKILL.md`](SKILL.md) for the complete activation, evidence, and output contract.
 
 ## License
 
