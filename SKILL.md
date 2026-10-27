@@ -1,6 +1,6 @@
 ---
 name: free-course-share
-version: 1.1.8
+version: 1.1.9
 description: Verify whether a course is truly free, screen or compare free courses, build a shortlist, or draft accurate share copy. Use when the user requests any one of these free-course tasks; combine them only when requested.
 allowed-tools: WebSearch, WebFetch
 ---
@@ -141,3 +141,7 @@ Create one ready-to-review draft that:
 - Course access and certificate cost are not conflated.
 - Time-sensitive facts include a verification date.
 - The work remains read-only and has no external side effects.
+
+## 相关 skill / Related skills
+
+- 推荐文案定稿前跑 `xiaohongshu-prohibited-words`，避免「免费」「最」这类词触发限流。
